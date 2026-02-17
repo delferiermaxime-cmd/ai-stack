@@ -71,7 +71,7 @@ Les modèles d'IA font des millions de calculs en parallèle. Les GPU NVIDIA son
 
 ```bash
 # Télécharge le projet depuis GitHub
-git clone https://github.com/VOTRE-NOM/ai-stack.git
+git clone https://github.com/delferiermaxime-cmd/ai-stack.git
 
 # Entre dans le dossier du projet
 cd ai-stack
