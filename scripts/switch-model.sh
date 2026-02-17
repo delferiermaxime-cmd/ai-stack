@@ -37,11 +37,11 @@ read -p "  Votre choix (1-5) : " choice
 
 # Associe le choix au nom du modèle HuggingFace
 case $choice in
-    1) MODEL="google/gemma-3-4b-it" ;;
-    2) MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct" ;;
-    3) MODEL="THUDM/glm-4-9b-chat" ;;
-    4) MODEL="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B" ;;
-    5) MODEL="google/gemma-3-27b-it" ;;
+    1) MODEL="mistralai/Mistral-7B-Instruct-v0.2" ;;
+    2) MODEL="meta-llama/Llama-2-7b-chat-hf" ;;
+    3) MODEL="meta-llama/Llama-2-13b-chat-hf" ;;
+    4) MODEL="RedPajama-INCITE/RedPajama-INCITE-7B-Instruct" ;;
+    5) MODEL="RedPajama-INCITE-13B-Instruct" ;;
     *)
         echo -e "${RED}Choix invalide.${NC}"
         exit 1
