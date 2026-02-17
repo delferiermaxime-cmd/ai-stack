@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-#  Script de changement de modèle LLM
+#  Script de changement de modèle LLM (Open Source)
 # =============================================================================
 #
 #  Ce script permet de changer facilement le modèle d'IA utilisé.
@@ -18,18 +18,18 @@ NC='\033[0m'
 
 echo ""
 echo "=========================================="
-echo "  Changement de modèle LLM"
+echo "  Changement de modèle LLM (Open Source)"
 echo "=========================================="
 echo ""
 
 # Liste des modèles disponibles avec leur consommation VRAM estimée
 echo "  Modèles disponibles :"
 echo ""
-echo "    1) Gemma 3 4B       (~3 Go VRAM)   - Rapide, bon pour les tests"
-echo "    2) Llama 3.1 8B     (~6-8 Go VRAM) - Bon équilibre"
-echo "    3) GLM-4 9B         (~6-8 Go VRAM) - Bon en multilingue"
-echo "    4) DeepSeek R1 14B  (~10-12 Go)    - Raisonnement avancé"
-echo "    5) Gemma 3 27B      (~18-20 Go)    - Le plus puissant"
+echo "    1) GLM-4 9B          (~6-8 Go VRAM)  - Multilingue, open source"
+echo "    2) DeepSeek R1 14B   (~10-12 Go VRAM) - Raisonnement avancé, open source"
+echo "    3) Mistral 7B        (~6-7 Go VRAM)  - Très rapide, open source"
+echo "    4) RedPajama 7B      (~7 Go VRAM)    - Instruction fine-tuning"
+echo "    5) RedPajama 13B     (~12-13 Go VRAM) - Plus puissant"
 echo ""
 
 # Demande le choix de l'utilisateur
@@ -37,11 +37,11 @@ read -p "  Votre choix (1-5) : " choice
 
 # Associe le choix au nom du modèle HuggingFace
 case $choice in
-    1) MODEL="mistralai/Mistral-7B-Instruct-v0.2" ;;
-    2) MODEL="meta-llama/Llama-2-7b-chat-hf" ;;
-    3) MODEL="meta-llama/Llama-2-13b-chat-hf" ;;
-    4) MODEL="RedPajama-INCITE/RedPajama-INCITE-7B-Instruct" ;;
-    5) MODEL="RedPajama-INCITE-13B-Instruct" ;;
+    1) MODEL="THUDM/glm-4-9b-chat" ;;
+    2) MODEL="deepseek-ai/DeepSeek-R1-Distill-Qwen-14B" ;;
+    3) MODEL="mistralai/Mistral-7B-Instruct-v0.2" ;;
+    4) MODEL="togethercomputer/RedPajama-INCITE-7B-Instruct" ;;
+    5) MODEL="togethercomputer/RedPajama-INCITE-13B-Instruct" ;;
     *)
         echo -e "${RED}Choix invalide.${NC}"
         exit 1
@@ -58,14 +58,12 @@ if [ ! -f .env ]; then
 fi
 
 # Modifie la ligne VLLM_MODEL dans le fichier .env
-# sed remplace la ligne qui commence par VLLM_MODEL= (commentée ou non)
-# par la nouvelle valeur
 sed -i "s|^#*VLLM_MODEL=.*|VLLM_MODEL=${MODEL}|" .env
 
 echo -e "${GREEN}[OK]${NC} Fichier .env mis à jour"
 echo ""
 
-# Relance uniquement le service vLLM (les autres services ne sont pas affectés)
+# Relance uniquement le service vLLM
 echo -e "${BLUE}[INFO]${NC} Relancement de vLLM avec le nouveau modèle..."
 echo "  (Le téléchargement peut prendre plusieurs minutes si c'est un nouveau modèle)"
 echo ""
