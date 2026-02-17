@@ -1,0 +1,14 @@
+# =============================================================================
+#  Fichiers à ne PAS envoyer sur GitHub
+# =============================================================================
+
+# Le fichier .env contient des clés API et tokens secrets
+# Seul .env.example est versionné (il sert de modèle)
+.env
+
+# Fichiers systèmes
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

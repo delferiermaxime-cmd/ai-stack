@@ -1,0 +1,389 @@
+# =============================================================================
+#  STACK IA LOCALE - Pipeline RAG complète
+# =============================================================================
+#
+#  Ce fichier lance 5 services qui travaillent ensemble :
+#
+#  1. vLLM         → Le cerveau : fait tourner les modèles de langage (LLM)
+#  2. TEI          → Le traducteur : transforme le texte en vecteurs (embedding)
+#  3. Qdrant       → La mémoire : stocke les vecteurs pour la recherche
+#  4. Docling      → Le lecteur : extrait le texte des PDF, Word, etc.
+#  5. Open WebUI   → L'interface : permet aux utilisateurs de discuter avec l'IA
+#
+#  Comment ça marche ensemble :
+#
+#    Utilisateur  →  Open WebUI  →  Docling (lit les documents)
+#                                →  TEI (transforme en vecteurs)
+#                                →  Qdrant (stocke les vecteurs)
+#                                →  vLLM (génère les réponses)
+#
+# =============================================================================
+
+services:
+
+  # ===========================================================================
+  #  SERVICE 1 : vLLM - Le moteur d'intelligence artificielle
+  # ===========================================================================
+  #
+  #  C'est le service le plus important. Il charge un modèle de langage (LLM)
+  #  sur le GPU et répond aux questions des utilisateurs.
+  #
+  #  vLLM ne peut charger qu'UN SEUL modèle à la fois. Pour changer de modèle,
+  #  il faut modifier la variable VLLM_MODEL dans le fichier .env puis relancer :
+  #    docker compose up -d vllm --force-recreate
+  #
+  #  Le modèle choisi sera visible et sélectionnable dans Open WebUI.
+  #
+  vllm:
+    # Image officielle de vLLM, compatible avec l'API OpenAI
+    # Source : https://docs.vllm.ai/en/stable/deployment/docker/
+    image: vllm/vllm-openai:latest
+    container_name: vllm
+
+    # Donne accès au(x) GPU(s) NVIDIA au conteneur
+    # Nécessite nvidia-container-toolkit installé sur le serveur
+    runtime: nvidia
+
+    # Variables d'environnement pour le conteneur
+    environment:
+      # Rend tous les GPU visibles pour vLLM
+      - NVIDIA_VISIBLE_DEVICES=all
+      # Token HuggingFace pour les modèles protégés (Llama, Gemma, etc.)
+      # À renseigner dans le fichier .env
+      - HF_TOKEN=${HF_TOKEN:-}
+
+    # Stocke les modèles téléchargés pour ne pas re-télécharger à chaque redémarrage
+    volumes:
+      - vllm-cache:/root/.cache/huggingface
+
+    # Expose le port 8000 pour l'API compatible OpenAI
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+
+    # ipc=host est nécessaire pour le partage mémoire entre processus GPU
+    # C'est recommandé par la documentation officielle de vLLM
+    # Source : https://docs.vllm.ai/en/stable/deployment/docker/
+    ipc: host
+
+    # Commande de lancement de vLLM avec ses paramètres
+    # Chaque paramètre est expliqué ci-dessous
+    command: >
+      --model ${VLLM_MODEL:-google/gemma-3-4b-it}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-4096}
+      --gpu-memory-utilization ${VLLM_GPU_MEM:-0.85}
+      --dtype auto
+      --trust-remote-code
+      --host 0.0.0.0
+      --port 8000
+      --api-key ${VLLM_API_KEY:-sk-local-key}
+    # Explications des paramètres :
+    #   --model              : Le modèle à charger (défini dans .env)
+    #   --max-model-len      : Taille maximale du contexte en tokens
+    #                          Plus c'est grand, plus ça consomme de VRAM
+    #   --gpu-memory-utilization : Pourcentage de VRAM à utiliser (0.85 = 85%)
+    #                              Baisser si erreur "Out of Memory"
+    #   --dtype auto         : Choisit automatiquement la précision (fp16/bf16)
+    #   --trust-remote-code  : Nécessaire pour certains modèles (Gemma, GLM4)
+    #   --host 0.0.0.0       : Écoute sur toutes les interfaces réseau
+    #   --api-key            : Clé API pour sécuriser l'accès
+
+    # Redémarre automatiquement sauf si arrêté manuellement
+    restart: unless-stopped
+
+    # Vérifie que le service est en bonne santé
+    # vLLM expose un endpoint /health pour ça
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      # Vérifie toutes les 30 secondes
+      interval: 30s
+      # Considère en échec après 10 secondes sans réponse
+      timeout: 10s
+      # Nombre de tentatives avant de considérer le service comme "unhealthy"
+      retries: 5
+      # Temps d'attente avant la première vérification
+      # Les modèles prennent du temps à se charger (téléchargement + chargement GPU)
+      start_period: 300s
+
+  # ===========================================================================
+  #  SERVICE 2 : TEI - Le moteur d'embedding (transforme le texte en vecteurs)
+  # ===========================================================================
+  #
+  #  TEI (Text Embeddings Inference) est un outil de HuggingFace spécialisé
+  #  dans la transformation de texte en vecteurs numériques (embeddings).
+  #
+  #  C'est grâce à ces vecteurs qu'on peut chercher des passages similaires
+  #  dans les documents uploadés (c'est la base du RAG).
+  #
+  #  On utilise le modèle BGE-M3 qui supporte :
+  #    - Plus de 100 langues (dont le français)
+  #    - Des textes jusqu'à 8192 tokens
+  #    - L'embedding dense (pour la recherche sémantique)
+  #
+  #  Source : https://huggingface.co/docs/text-embeddings-inference/
+  #  Compatibilité : TEI supporte XLM-RoBERTa (l'architecture de BGE-M3)
+  #
+  tei:
+    # Image officielle de TEI pour GPU
+    # Source : https://github.com/huggingface/text-embeddings-inference
+    image: ghcr.io/huggingface/text-embeddings-inference:1.8
+    container_name: tei
+
+    # Variables d'environnement
+    environment:
+      # Rend le GPU accessible
+      - NVIDIA_VISIBLE_DEVICES=all
+
+    # Stocke le modèle d'embedding pour ne pas le re-télécharger
+    volumes:
+      - tei-cache:/data
+
+    # Port 8081 pour l'API d'embedding
+    # TEI écoute sur le port 80 en interne, on le mappe sur 8081 en externe
+    ports:
+      - "${TEI_PORT:-8081}:80"
+
+    # Paramètres de lancement de TEI
+    # --model-id : Le modèle d'embedding à utiliser
+    # BGE-M3 est basé sur XLM-RoBERTa, nativement supporté par TEI
+    command: >
+      --model-id ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      --max-client-batch-size 64
+    # Explications :
+    #   --model-id                : Le modèle d'embedding (BGE-M3)
+    #   --max-client-batch-size   : Nombre max de textes traités en un lot
+    #                               64 est un bon compromis performance/mémoire
+
+    # Nécessite un GPU NVIDIA
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:80/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ===========================================================================
+  #  SERVICE 3 : Qdrant - La base de données vectorielle
+  # ===========================================================================
+  #
+  #  Qdrant stocke les vecteurs générés par TEI. Quand un utilisateur pose
+  #  une question, Open WebUI transforme la question en vecteur (via TEI),
+  #  puis cherche dans Qdrant les passages de documents les plus proches.
+  #
+  #  C'est comme un moteur de recherche ultra-précis qui comprend le SENS
+  #  des phrases, pas juste les mots-clés.
+  #
+  #  Qdrant est supporté nativement par Open WebUI via la variable VECTOR_DB=qdrant
+  #  Source : https://docs.openwebui.com/features/
+  #
+  qdrant:
+    # Image officielle de Qdrant
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+
+    # Ports exposés
+    ports:
+      # API REST - utilisé par Open WebUI pour stocker/rechercher les vecteurs
+      - "${QDRANT_PORT:-6333}:6333"
+      # API gRPC - protocole plus rapide (utilisé en interne si disponible)
+      - "6334:6334"
+
+    # Les vecteurs sont stockés ici, persistent entre les redémarrages
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+    # Clé API pour sécuriser l'accès à Qdrant
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-qdrant-local-key}
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ===========================================================================
+  #  SERVICE 4 : Docling Serve - L'extracteur de documents
+  # ===========================================================================
+  #
+  #  Docling transforme les fichiers (PDF, Word, Excel, PowerPoint, images)
+  #  en texte propre et structuré (format Markdown).
+  #
+  #  Sans Docling, un PDF serait lu de façon basique et on perdrait :
+  #    - La structure (titres, sous-titres)
+  #    - Les tableaux
+  #    - Les colonnes
+  #    - Le texte dans les images (OCR)
+  #
+  #  Avec Docling, le texte extrait est propre et bien organisé, ce qui
+  #  améliore grandement la qualité du RAG.
+  #
+  #  L'intégration avec Open WebUI est native :
+  #  Admin Panel → Settings → Documents → Content Extraction Engine → Docling
+  #  Source : https://docs.openwebui.com/features/rag/document-extraction/docling/
+  #
+  docling:
+    # Image officielle de Docling Serve avec support GPU (CUDA 12.8)
+    # Source : https://github.com/docling-project/docling-serve
+    image: quay.io/docling-project/docling-serve:latest
+    container_name: docling
+
+    # Port 5001 pour l'API de Docling
+    ports:
+      - "${DOCLING_PORT:-5001}:5001"
+
+    # Variables d'environnement pour Docling
+    environment:
+      # Active l'interface web de test de Docling (utile pour débugger)
+      - DOCLING_SERVE_ENABLE_UI=true
+      # IMPORTANT : Garder à 1 pour éviter les erreurs "Task Not Found"
+      # Source : https://docs.openwebui.com/features/rag/document-extraction/docling/
+      - UVICORN_WORKERS=1
+      # Temps max d'attente pour le traitement d'un document (en secondes)
+      # 600 = 10 minutes, suffisant pour des gros PDF
+      - DOCLING_SERVE_MAX_SYNC_WAIT=600
+      # Nombre de workers pour le moteur de traitement local
+      - DOCLING_SERVE_ENG_LOC_NUM_WORKERS=2
+      # Configuration des threads CPU pour optimiser les performances
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # Docling prend du temps à démarrer car il charge ses modèles
+      start_period: 120s
+
+  # ===========================================================================
+  #  SERVICE 5 : Open WebUI - L'interface utilisateur
+  # ===========================================================================
+  #
+  #  C'est l'interface graphique que les utilisateurs verront.
+  #  Elle ressemble à ChatGPT mais tourne entièrement en local.
+  #
+  #  Open WebUI orchestre tous les autres services :
+  #    - Envoie les questions au LLM (vLLM)
+  #    - Utilise TEI pour l'embedding des documents
+  #    - Stocke les vecteurs dans Qdrant
+  #    - Utilise Docling pour extraire le texte des fichiers uploadés
+  #
+  #  Les utilisateurs peuvent :
+  #    - Discuter avec l'IA
+  #    - Uploader des documents (PDF, Word, etc.) pour le RAG
+  #    - Créer des bases de connaissances
+  #    - Choisir le modèle LLM à utiliser
+  #
+  #  Source : https://docs.openwebui.com/
+  #
+  open-webui:
+    # Image officielle d'Open WebUI
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+
+    # Port 3000 pour l'interface web
+    # C'est l'URL que les utilisateurs ouvriront dans leur navigateur
+    ports:
+      - "${WEBUI_PORT:-3000}:8080"
+
+    environment:
+      # -----------------------------------------------------------------
+      #  CONNEXION AU LLM (vLLM)
+      # -----------------------------------------------------------------
+      #  Open WebUI se connecte à vLLM comme à un serveur OpenAI.
+      #  "vllm" est le nom du service Docker, résolu automatiquement
+      #  par le réseau interne Docker.
+      - OPENAI_API_BASE_URL=http://vllm:8000/v1
+      - OPENAI_API_KEY=${VLLM_API_KEY:-sk-local-key}
+
+      # -----------------------------------------------------------------
+      #  CONFIGURATION DE L'EMBEDDING (TEI + BGE-M3)
+      # -----------------------------------------------------------------
+      #  On dit à Open WebUI d'utiliser un serveur externe compatible
+      #  OpenAI pour l'embedding, au lieu de le faire en local.
+      #
+      #  TEI expose une API compatible OpenAI sur /v1/embeddings
+      #  Source : https://huggingface.co/docs/text-embeddings-inference/quick_tour
+      - RAG_EMBEDDING_ENGINE=openai
+      - RAG_OPENAI_API_BASE_URL=http://tei:80/v1
+      - RAG_OPENAI_API_KEY=dummy
+      - RAG_EMBEDDING_MODEL=BAAI/bge-m3
+
+      # -----------------------------------------------------------------
+      #  CONFIGURATION DE LA BASE VECTORIELLE (Qdrant)
+      # -----------------------------------------------------------------
+      #  On dit à Open WebUI d'utiliser Qdrant au lieu de ChromaDB
+      #  (qui est le choix par défaut mais moins performant)
+      #  Source : https://docs.openwebui.com/features/
+      - VECTOR_DB=qdrant
+      - QDRANT_URI=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-qdrant-local-key}
+
+      # -----------------------------------------------------------------
+      #  CONFIGURATION DE L'EXTRACTION DE DOCUMENTS (Docling)
+      # -----------------------------------------------------------------
+      #  On dit à Open WebUI d'utiliser Docling pour extraire le texte
+      #  des fichiers uploadés par les utilisateurs.
+      #  Source : https://docs.openwebui.com/features/rag/document-extraction/docling/
+      - CONTENT_EXTRACTION_ENGINE=docling
+      - DOCLING_SERVER_URL=http://docling:5001
+
+      # -----------------------------------------------------------------
+      #  PARAMÈTRES GÉNÉRAUX
+      # -----------------------------------------------------------------
+      #  Active l'authentification (premier utilisateur = admin)
+      - WEBUI_AUTH=true
+      #  Nom affiché dans l'interface
+      - WEBUI_NAME=${WEBUI_NAME:-Mon Assistant IA}
+
+    # Stocke les données de l'application (comptes utilisateurs, conversations, etc.)
+    volumes:
+      - open-webui-data:/app/backend/data
+
+    # Open WebUI ne démarre que quand les autres services sont prêts
+    depends_on:
+      vllm:
+        condition: service_healthy
+      tei:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      docling:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+# =============================================================================
+#  VOLUMES - Stockage persistant des données
+# =============================================================================
+#
+#  Les volumes Docker gardent les données même quand les conteneurs sont arrêtés.
+#  Sans ça, tout serait perdu à chaque redémarrage.
+#
+volumes:
+  # Modèles LLM téléchargés depuis HuggingFace (~5-20 Go par modèle)
+  vllm-cache:
+    name: ai-stack-vllm-cache
+  # Modèle d'embedding BGE-M3 (~2 Go)
+  tei-cache:
+    name: ai-stack-tei-cache
+  # Vecteurs stockés dans Qdrant (taille variable selon les documents)
+  qdrant-data:
+    name: ai-stack-qdrant-data
+  # Données d'Open WebUI (comptes, conversations, paramètres)
+  open-webui-data:
+    name: ai-stack-open-webui-data
